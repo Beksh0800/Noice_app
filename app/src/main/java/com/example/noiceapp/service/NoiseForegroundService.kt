@@ -179,7 +179,8 @@ class NoiseForegroundService : Service() {
             val nowSec = System.currentTimeMillis() / 1000L
             if (nowSec != currentSecond && countSec > 0) {
                 val rms = kotlin.math.sqrt(sumSquaresSec / countSec)
-                val laeqDb = 20.0 * kotlin.math.log10(rms.coerceAtLeast(1e-9)) + currentOffsetDb
+                val laeqDbRaw = 20.0 * kotlin.math.log10(rms.coerceAtLeast(1e-9)) + currentOffsetDb
+                val laeqDb = laeqDbRaw.coerceIn(0.0, 120.0)
                 val loc = locationProvider.getCurrentOrNull()
                 val entity = NoiseMeasurement(
                     timestampMillis = currentSecond * 1000L,

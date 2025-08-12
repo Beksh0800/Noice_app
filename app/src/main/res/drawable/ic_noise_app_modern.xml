@@ -1,0 +1,64 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?attr/colorOnSurface">
+    
+    <!-- Фон иконки -->
+    <path
+        android:fillColor="#1976D2"
+        android:pathData="M12,2C6.48,2 2,6.48 2,12s4.48,10 10,10 10,-4.48 10,-10S17.52,2 12,2z" />
+    
+    <!-- Внутренний круг -->
+    <path
+        android:fillColor="#42A5F5"
+        android:pathData="M12,4C7.58,4 4,7.58 4,12s3.58,8 8,8 8,-3.58 8,-8S16.42,4 12,4z" />
+    
+    <!-- Звуковые волны (анимированные) -->
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M7,8 L7,6 L9,6 L9,8 L7,8 Z" />
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M7,16 L7,18 L9,18 L9,16 L7,16 Z" />
+    
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M10,7 L10,5 L12,5 L12,7 L10,7 Z" />
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M10,17 L10,19 L12,19 L12,17 L10,17 Z" />
+    
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M13,6 L13,4 L15,4 L15,6 L13,6 Z" />
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M13,18 L13,20 L15,20 L15,18 L13,18 Z" />
+    
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M16,7 L16,5 L18,5 L18,7 L16,7 Z" />
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M16,17 L16,19 L18,19 L18,17 L16,17 Z" />
+    
+    <!-- Центральный символ шумомера -->
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M12,10 L10,10 L10,14 L14,14 L14,10 L12,10 Z" />
+    
+    <!-- Индикатор уровня шума -->
+    <path
+        android:fillColor="#4CAF50"
+        android:pathData="M12,11 L11,11 L11,13 L13,13 L13,11 L12,11 Z" />
+    
+    <!-- Дополнительные элементы -->
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M6,12 L4,12 L4,14 L6,14 L6,12 Z" />
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M20,12 L18,12 L18,14 L20,14 L20,12 Z" />
+</vector>
