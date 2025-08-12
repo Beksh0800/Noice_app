@@ -11,6 +11,9 @@ interface NoiseDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(measurement: NoiseMeasurement): Long
 
+    @Query("SELECT * FROM noise_measurements ORDER BY timestampMillis ASC")
+    suspend fun getAll(): List<NoiseMeasurement>
+
     @Query("SELECT * FROM noise_measurements WHERE timestampMillis BETWEEN :from AND :to ORDER BY timestampMillis ASC")
     fun observeBetween(from: Long, to: Long): Flow<List<NoiseMeasurement>>
 
@@ -20,8 +23,26 @@ interface NoiseDao {
     @Query("SELECT * FROM noise_measurements ORDER BY timestampMillis DESC LIMIT :limit")
     suspend fun getLatest(limit: Int): List<NoiseMeasurement>
 
+    @Query("SELECT * FROM noise_measurements WHERE uploaded = 0 ORDER BY timestampMillis ASC")
+    suspend fun getNotUploaded(): List<NoiseMeasurement>
+
+    @Query("UPDATE noise_measurements SET uploaded = 1 WHERE id = :id")
+    suspend fun markUploaded(id: Long)
+
     @Query("DELETE FROM noise_measurements")
     suspend fun clearAll()
+}
+
+@Dao
+interface CitySampleDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(sample: CitySample): Long
+
+    @Query("SELECT * FROM city_samples ORDER BY timestampMillis DESC")
+    fun observeAll(): Flow<List<CitySample>>
+
+    @Query("SELECT * FROM city_samples WHERE id = :id")
+    suspend fun getById(id: Long): CitySample?
 }
 
 

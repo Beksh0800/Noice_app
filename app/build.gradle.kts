@@ -55,6 +55,8 @@ dependencies {
         // Material icons for info button
         implementation("androidx.compose.material:material-icons-extended")
         // для экспорта больше не требуются дополнительные зависимости
+        // Navigation
+        implementation(libs.navigation.compose)
 
     // Room
     implementation(libs.room.runtime)
@@ -67,6 +69,10 @@ dependencies {
 
     // DataStore
     implementation(libs.datastore.preferences)
+
+    // Networking (OkHttp)
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

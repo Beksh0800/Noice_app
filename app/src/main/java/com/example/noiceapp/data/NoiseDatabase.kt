@@ -6,12 +6,13 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 
 @Database(
-    entities = [NoiseMeasurement::class],
-    version = 1,
+    entities = [NoiseMeasurement::class, CitySample::class],
+    version = 3,
     exportSchema = false
 )
 abstract class NoiseDatabase : RoomDatabase() {
     abstract fun noiseDao(): NoiseDao
+    abstract fun citySampleDao(): CitySampleDao
 
     companion object {
         @Volatile private var instance: NoiseDatabase? = null

@@ -28,3 +28,6 @@ class LocationProvider(context: Context) {
 data class LocationSnapshot(val lat: Double, val lon: Double, val accuracy: Float)
 
 
+
+
+

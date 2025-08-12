@@ -11,7 +11,8 @@ data class NoiseMeasurement(
     val lamaxDb: Double?,
     val latitude: Double?,
     val longitude: Double?,
-    val locationAccuracyMeters: Float?
+    val locationAccuracyMeters: Float?,
+    val uploaded: Boolean = false
 )
 
 
