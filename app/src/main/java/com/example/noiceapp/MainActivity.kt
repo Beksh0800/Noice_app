@@ -78,6 +78,8 @@ import com.example.noiceapp.data.NoiseDatabase
 import com.example.noiceapp.data.NoiseRepository
 import com.example.noiceapp.data.CitySample
 import com.example.noiceapp.data.CitySamplesRepository
+import com.example.noiceapp.data.NoiseAnalysis
+import com.example.noiceapp.data.NoiseAnalysesRepository
 import kotlinx.coroutines.flow.collectLatest
 import com.example.noiceapp.service.NoiseForegroundService
 import androidx.navigation.compose.NavHost
@@ -127,12 +129,19 @@ import org.json.JSONObject
 import java.io.File
 import java.time.Instant
 import java.time.ZoneOffset
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Save
 
 data class NoisePoint(val timeMillis: Long, val db: Double)
 
 class NoiseViewModel(application: Application) : AndroidViewModel(application) {
     private val repository: NoiseRepository = NoiseRepository(NoiseDatabase.get(application).noiseDao())
     private val samplesRepository: CitySamplesRepository = CitySamplesRepository(NoiseDatabase.get(application).citySampleDao())
+    // analyses repository
+    private val analysesRepository: com.example.noiceapp.data.NoiseAnalysesRepository = NoiseAnalysesRepository(NoiseDatabase.get(application).analysisDao())
     private val settingsStore = com.example.noiceapp.settings.SettingsStore(application)
     private var observeJob: Job? = null
 
@@ -161,6 +170,10 @@ class NoiseViewModel(application: Application) : AndroidViewModel(application) {
     // Экран 2: городские выборки
     private val _citySamples = mutableStateListOf<CitySample>()
     val citySamples: List<CitySample> get() = _citySamples
+
+    // Экран Анализы: сохранённые агрегаты
+    private val _analyses = mutableStateListOf<NoiseAnalysis>()
+    val analyses: List<NoiseAnalysis> get() = _analyses
 
     // Настройки выгрузки
     private val _studentId = mutableStateOf("")
@@ -243,6 +256,12 @@ class NoiseViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) { settingsStore.studentIdFlow.collectLatest { _studentId.value = it } }
         viewModelScope.launch(Dispatchers.IO) { settingsStore.uploadUrlFlow.collectLatest { _uploadUrl.value = it } }
         viewModelScope.launch(Dispatchers.IO) { settingsStore.apiKeyFlow.collectLatest { _apiKey.value = it } }
+        // Подписка на список сохранённых анализов
+        viewModelScope.launch(Dispatchers.IO) {
+            analysesRepository.observe().collectLatest { list ->
+                _analyses.clear(); _analyses.addAll(list)
+            }
+        }
     }
 
     fun onStartRecording() { _isRecording.value = true }
@@ -331,84 +350,52 @@ class NoiseViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    
-
-    private fun saveCsvToDownloads(context: android.content.Context, csv: String): String? {
-        val filename = "noise_export_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())}.csv"
-        return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val values = android.content.ContentValues().apply {
-                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, filename)
-                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/csv")
-                    put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
-                }
-                val uri = context.contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                if (uri != null) {
-                    context.contentResolver.openOutputStream(uri)?.use { it.write(csv.toByteArray(Charsets.UTF_8)) }
-                    filename
-                } else null
-            } else {
-                // Pre-Android 10: сохраняем в публичные Загрузки + просим медиа-сканер проиндексировать
-                val downloads = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
-                if (!downloads.exists()) downloads.mkdirs()
-                val file = File(downloads, filename)
-                file.writeText(csv, Charsets.UTF_8)
-                try {
-                    android.media.MediaScannerConnection.scanFile(context, arrayOf(file.absolutePath), arrayOf("text/csv"), null)
-                } catch (_: Throwable) {}
-                filename
-            }
-        } catch (_: Throwable) {
-            null
-        }
+    // Сохранить текущий анализ (последние N секунд) в БД
+    fun saveCurrentAnalysis(windowSec: Int = 300) {
+        val now = System.currentTimeMillis()
+        val from = now - windowSec * 1000L
+        val slice = history.filter { it.timeMillis >= from }
+        if (slice.isEmpty()) return
+        val values = slice.map { sanitizeDb(it.db) }
+        val analysis = NoiseAnalysis(
+            timestampMillis = now,
+            avgDb = values.average(),
+            minDb = values.minOrNull() ?: 0.0,
+            maxDb = values.maxOrNull() ?: 0.0,
+            count = values.size,
+            lastDb = values.last()
+        )
+        viewModelScope.launch(Dispatchers.IO) { analysesRepository.add(analysis) }
     }
 
-    // Загрузка одной записи в Apps Script
-    private suspend fun uploadOne(measurement: com.example.noiceapp.data.NoiseMeasurement, uploadUrl: String, studentId: String, apiKey: String): Boolean {
-        if (uploadUrl.isBlank()) return false
-        val json = JSONObject().apply {
-            put("student_id", studentId)
-            put("timestamp", Instant.ofEpochMilli(measurement.timestampMillis).atOffset(ZoneOffset.UTC).toInstant().toString())
-            put("db", measurement.laeqDb)
-            if (measurement.latitude != null) put("lat", measurement.latitude) else put("lat", JSONObject.NULL)
-            if (measurement.longitude != null) put("lon", measurement.longitude) else put("lon", JSONObject.NULL)
-            put("device", Build.MODEL)
-            put("api_key", apiKey)
-        }
-        val body: RequestBody = json.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
-        val req = Request.Builder().url(uploadUrl).post(body).build()
-        return try {
-            httpClient.newCall(req).execute().use { resp ->
-                resp.isSuccessful
-            }
-        } catch (_: Throwable) {
-            false
-        }
+    fun deleteAnalysis(id: Long) {
+        viewModelScope.launch(Dispatchers.IO) { analysesRepository.delete(id) }
     }
 
-    fun uploadAllPending(snackbar: SnackbarHostState) {
+    fun databaseSizeBytes(context: android.content.Context): Long {
+        return try { context.getDatabasePath("noise_db").length() } catch (_: Throwable) { 0L }
+    }
+
+    fun exportAnalysesCsv(context: android.content.Context, snackbar: SnackbarHostState) {
         viewModelScope.launch(Dispatchers.IO) {
-            val url = uploadUrl.value
-            val sid = studentId.value
-            val key = apiKey.value
-            if (url.isBlank() || sid.isBlank()) {
-                launchSnackbar(snackbar, "Укажите Student ID и Upload URL в настройках")
-                return@launch
-            }
-            val list = repository.getNotUploaded()
-            if (list.isEmpty()) {
-                launchSnackbar(snackbar, "Нет записей для загрузки")
-                return@launch
-            }
-            var ok = 0
-            list.forEach { m ->
-                val success = uploadOne(m, url, sid, key)
-                if (success) {
-                    repository.markUploaded(m.id)
-                    ok++
+            try {
+                val list = analyses.toList()
+                if (list.isEmpty()) { launchSnackbar(snackbar, "Нет данных для экспорта"); return@launch }
+                val csv = buildString {
+                    appendLine("timestamp_utc,avg_db,min_db,max_db,count,last_db")
+                    list.forEach { a ->
+                        val iso = java.time.Instant.ofEpochMilli(a.timestampMillis).atOffset(java.time.ZoneOffset.UTC).toInstant().toString()
+                        appendLine("$iso,${String.format("%.1f", a.avgDb)},${String.format("%.1f", a.minDb)},${String.format("%.1f", a.maxDb)},${a.count},${String.format("%.1f", a.lastDb)}")
+                    }
                 }
+                val savedName = saveCsvToDownloads(context, csv)
+                launch(Dispatchers.Main) {
+                    if (savedName != null) launchSnackbar(snackbar, "CSV сохранён: Папка Загрузки/$savedName")
+                    else launchSnackbar(snackbar, "Ошибка экспорта CSV")
+                }
+            } catch (_: Throwable) {
+                launchSnackbar(snackbar, "Ошибка экспорта CSV")
             }
-            launchSnackbar(snackbar, "Загружено: $ok из ${list.size}")
         }
     }
 
@@ -561,6 +548,73 @@ private fun DatasetScreen(vm: NoiseViewModel) {
 }
 
 @Composable
+private fun CityScreen(vm: NoiseViewModel) {
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        Text("Город", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(12.dp))
+        SamplesListScreen(vm = vm, onOpen = { })
+    }
+}
+
+@Composable
+private fun AnalysesScreen(vm: NoiseViewModel, snackbar: SnackbarHostState) {
+    val ctx = LocalContext.current
+    val analyses = vm.analyses
+    val dbSizeKb = remember(analyses) { (vm.databaseSizeBytes(ctx) / 1024.0).coerceAtLeast(0.0) }
+
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        Text("Мои анализы", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(12.dp))
+
+        // Статистика хранилища
+        ElevatedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Статистика хранилища", fontWeight = FontWeight.Medium)
+                Spacer(Modifier.height(8.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column { Text("Сохранено анализов:"); Text("${analyses.size}", fontWeight = FontWeight.Bold) }
+                    Column { Text("Размер данных:"); Text("${String.format("%.1f", dbSizeKb)} КБ", fontWeight = FontWeight.Bold) }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { vm.saveCurrentAnalysis() }) { Text("Сохранить анализ") }
+                    OutlinedButton(onClick = { vm.exportAnalysesCsv(ctx, snackbar) }) { Text("Экспорт CSV") }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        // Список анализов
+        LazyColumn {
+            items(analyses) { a ->
+                ElevatedCard(Modifier.fillMaxWidth().padding(vertical = 8.dp), shape = RoundedCornerShape(12.dp)) {
+                    Column(Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(java.text.SimpleDateFormat("dd.MM.yyyy HH:mm", java.util.Locale.getDefault()).format(java.util.Date(a.timestampMillis)), modifier = Modifier.weight(1f))
+                            val cls = vm.classify(a.avgDb)
+                            AssistChip(onClick = {}, label = { Text(cls.replaceFirstChar { it.uppercase() }) })
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) { Text("${String.format("%.1f", a.avgDb)} дБ", fontWeight = FontWeight.Bold); Text("Среднее", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) { Text("${String.format("%.1f", a.minDb)} дБ", fontWeight = FontWeight.Bold); Text("Минимум", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) { Text("${String.format("%.1f", a.maxDb)} дБ", fontWeight = FontWeight.Bold); Text("Максимум", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Column { Text("${a.count}"); Text("Замеров", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                            Column { Text("${String.format("%.1f", a.lastDb)} дБ"); Text("Текущий", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                            IconButton(onClick = { vm.deleteAnalysis(a.id) }) { Icon(MaterialIcons.Outlined.Delete, contentDescription = "Удалить") }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun SampleDetailsScreen(vm: NoiseViewModel, id: Long) {
     val sample = remember(vm.citySamples) { vm.citySamples.find { it.id == id } }
     Column(Modifier.fillMaxSize().padding(16.dp)) {
@@ -595,41 +649,83 @@ private fun SampleDetailsScreen(vm: NoiseViewModel, id: Long) {
 @Composable
 private fun PredictionScreen(vm: NoiseViewModel) {
     val lastForecast = remember(vm.history) { vm.forecastNext() }
-    val ctx = LocalContext.current
-    val snackbar = remember { SnackbarHostState() }
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Прогноз", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(12.dp))
-        Text(text = lastForecast?.let { "Прогноз на минуту: ${"%.1f".format(it)} дБ" } ?: "Недостаточно данных")
-        Spacer(Modifier.height(20.dp))
-        SectionCard(title = "Выгрузка данных", onInfo = {
-            launchSnackbar(snackbar, "Укажите идентификатор ученика и URL веб‑приложения Apps Script.")
-        }) {
-            Spacer(Modifier.height(6.dp))
-            OutlinedTextField(
-                value = vm.studentId.value,
-                onValueChange = { vm.setStudentId(it) },
-                label = { Text("Student ID") },
-                modifier = Modifier.fillMaxWidth()
+    val currentDb by vm.currentDb
+    val recent = vm.history.takeLast(20)
+    
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            "Прогноз",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold
+        )
+        
+        Spacer(Modifier.height(32.dp))
+        
+        Text(
+            "Вероятно, в ближайшие 5 минут:",
+            fontSize = 18.sp,
+            textAlign = TextAlign.Center
+        )
+        
+        Spacer(Modifier.height(24.dp))
+        
+        // Иконка и прогноз
+        val avgRecent = if (recent.isNotEmpty()) recent.map { it.db }.average() else currentDb
+        val icon = when {
+            avgRecent < 50 -> MaterialIcons.Outlined.WbSunny // Солнышко - тишина
+            avgRecent < 65 -> MaterialIcons.Outlined.VolumeOff // Тишина
+            else -> MaterialIcons.Outlined.MusicNote // Колонки - шумно
+        }
+        
+        val iconColor = when {
+            avgRecent < 50 -> Color(0xFF4CAF50)
+            avgRecent < 65 -> Color(0xFFFF9800)
+            else -> Color(0xFFF44336)
+        }
+        
+        val prediction = when {
+            avgRecent < 50 -> "Будет тихо"
+            avgRecent < 65 -> "Умеренный шум"
+            else -> "Будет шумно"
+        }
+        
+        Icon(
+            icon,
+            contentDescription = null,
+            modifier = Modifier.size(80.dp),
+            tint = iconColor
+        )
+        
+        Spacer(Modifier.height(16.dp))
+        
+        Text(
+            prediction,
+            fontSize = 24.sp,
+            fontWeight = FontWeight.Bold,
+            color = iconColor
+        )
+        
+        Spacer(Modifier.height(8.dp))
+        
+        lastForecast?.let { forecast ->
+            Text(
+                "Ожидаемый уровень: ${"%.1f".format(forecast)} дБ",
+                fontSize = 16.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Spacer(Modifier.height(6.dp))
-            OutlinedTextField(
-                value = vm.uploadUrl.value,
-                onValueChange = { vm.setUploadUrl(it) },
-                label = { Text("Upload URL") },
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(6.dp))
-            OutlinedTextField(
-                value = vm.apiKey.value,
-                onValueChange = { vm.setApiKey(it) },
-                label = { Text("API Key") },
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { vm.uploadAllPending(snackbar) }) { Text("Upload to Class Sheet") }
-                OutlinedButton(onClick = { vm.exportCsv(ctx, snackbar) }) { Text("Export CSV (per-minute)") }
+        }
+        
+        Spacer(Modifier.height(32.dp))
+        
+        // Детали прогноза
+        SectionCard(title = "На основе последних измерений") {
+            Text("Количество замеров: ${recent.size}")
+            if (recent.isNotEmpty()) {
+                Text("Средний уровень: ${"%.1f".format(avgRecent)} дБ")
+                Text("Тенденция: ${if (recent.size >= 2 && recent.last().db > recent.first().db) "рост" else "снижение"}")
             }
         }
     }
@@ -656,6 +752,36 @@ private fun exportHistory(snackbar: SnackbarHostState, history: List<NoisePoint>
         launchSnackbar(snackbar, "Экспортировано: ${csv.length} символов CSV")
     } catch (_: Throwable) {
         launchSnackbar(snackbar, "Ошибка экспорта CSV")
+    }
+}
+
+private fun saveCsvToDownloads(context: android.content.Context, csv: String): String? {
+    val filename = "noise_export_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())}.csv"
+    return try {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, filename)
+                put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/csv")
+                put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
+            }
+            val uri = context.contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            if (uri != null) {
+                context.contentResolver.openOutputStream(uri)?.use { it.write(csv.toByteArray(Charsets.UTF_8)) }
+                filename
+            } else null
+        } else {
+            // Pre-Android 10: сохраняем в публичные Загрузки + просим медиа-сканер проиндексировать
+            val downloads = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+            if (!downloads.exists()) downloads.mkdirs()
+            val file = java.io.File(downloads, filename)
+            file.writeText(csv, Charsets.UTF_8)
+            try {
+                android.media.MediaScannerConnection.scanFile(context, arrayOf(file.absolutePath), arrayOf("text/csv"), null)
+            } catch (_: Throwable) {}
+            filename
+        }
+    } catch (_: Throwable) {
+        null
     }
 }
 
@@ -690,14 +816,16 @@ class MainActivity : ComponentActivity() {
                                         snackbar = snackbarHostState
                                     )
                                 }
-                                composable("graph") { 
+                                composable("graph") {
                                     NoiseGraphScreen(
                                         modifier = Modifier.fillMaxSize(),
                                         vm = viewModel,
                                         snackbar = snackbarHostState
-                                    ) 
+                                    )
                                 }
                                 composable("forecast") { NoiseForecastScreen(vm = viewModel) }
+                                composable("analyses") { AnalysesScreen(vm = viewModel, snackbar = snackbarHostState) }
+                                composable("city") { CityScreen(vm = viewModel) }
                                 composable("about") { AboutScreen() }
                             }
                         }
@@ -721,10 +849,16 @@ class MainActivity : ComponentActivity() {
                                 label = { Text("Прогноз") }
                             )
                             NavigationBarItem(
-                                selected = route == "about",
-                                onClick = { nav.navigate("about") },
-                                icon = { Icon(MaterialIcons.Outlined.Info, contentDescription = null) },
-                                label = { Text("О проекте") }
+                                selected = route == "analyses",
+                                onClick = { nav.navigate("analyses") },
+                                icon = { Icon(MaterialIcons.Outlined.Save, contentDescription = null) },
+                                label = { Text("Анализы") }
+                            )
+                            NavigationBarItem(
+                                selected = route == "city",
+                                onClick = { nav.navigate("city") },
+                                icon = { Icon(MaterialIcons.Outlined.ListAlt, contentDescription = null) },
+                                label = { Text("Город") }
                             )
                         }
                     }
@@ -902,94 +1036,17 @@ fun NoiseGraphScreen(modifier: Modifier = Modifier, vm: NoiseViewModel, snackbar
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold
         )
-        
         Spacer(Modifier.height(16.dp))
-        
-        // Линейный график
         SectionCard(title = "Уровень шума за последние минуты") {
             Spacer(Modifier.height(8.dp))
-            Chart(
+            InteractiveChart(
                 history = vm.history.map { it.copy(db = sanitizeDb(it.db)) },
                 minDb = 0.0,
                 maxDb = 120.0,
-                height = 200
+                height = 220
             )
-            
-            Spacer(Modifier.height(16.dp))
-            
-            // Подписи уровней
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(12.dp)
-                            .background(Color(0xFF4CAF50), CircleShape)
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Тихо",
-                        fontSize = 12.sp,
-                        color = Color(0xFF4CAF50)
-                    )
-                    Text(
-                        "< 50 дБ",
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(12.dp)
-                            .background(Color(0xFFFF9800), CircleShape)
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Средне",
-                        fontSize = 12.sp,
-                        color = Color(0xFFFF9800)
-                    )
-                    Text(
-                        "50-65 дБ",
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(12.dp)
-                            .background(Color(0xFFF44336), CircleShape)
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Шумно",
-                        fontSize = 12.sp,
-                        color = Color(0xFFF44336)
-                    )
-                    Text(
-                        "> 65 дБ",
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
         }
-        
         Spacer(Modifier.height(16.dp))
-        
-        // Аналитика
         SectionCard(title = "Статистика") {
             AnalyticsRow(title = "1 мин", vm = vm, windowSec = 60)
             Spacer(Modifier.height(8.dp))
@@ -1420,6 +1477,89 @@ fun Chart(history: List<NoisePoint>, minDb: Double, maxDb: Double, height: Int =
                         isAntiAlias = true
                     }
                     c.nativeCanvas.drawText(String.format("%.1f дБ", lastDb), lastX - 160f, lastY - 12f, p)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun InteractiveChart(history: List<NoisePoint>, minDb: Double, maxDb: Double, height: Int = 200) {
+    val raw = history.takeLast(600)
+    val points = if (raw.size < 3) raw else smooth(raw, window = 5)
+    var scale by remember { mutableStateOf(1f) } // 1..6
+    var offset by remember { mutableStateOf(0f) } // 0..1
+    var markerX by remember { mutableStateOf<Float?>(null) }
+
+    val lineColor = MaterialTheme.colorScheme.primary
+    val gridColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+    val accent = MaterialTheme.colorScheme.secondary
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(height.dp)
+            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp))
+            .padding(8.dp)
+            .pointerInput(points) {
+                detectTransformGestures { _, pan, zoom, _ ->
+                    scale = (scale * zoom).coerceIn(1f, 6f)
+                    val contentW = size.width * scale
+                    if (contentW > size.width) {
+                        val maxOffset = 1f - size.width / contentW
+                        if (maxOffset > 0f) offset = (offset - pan.x / contentW).coerceIn(0f, maxOffset)
+                    } else {
+                        offset = 0f
+                    }
+                }
+            }
+            .pointerInput(Unit) {
+                detectTapGestures(onPress = { pos -> markerX = pos.x })
+            }
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+
+            // Сетка
+            for (db in (minDb.toInt()..maxDb.toInt() step 10)) {
+                val t = (db - minDb) / (maxDb - minDb + 1e-9)
+                val y = (h - (t * h)).toFloat()
+                drawLine(color = gridColor, start = androidx.compose.ui.geometry.Offset(0f, y), end = androidx.compose.ui.geometry.Offset(w, y), strokeWidth = 1f)
+            }
+
+            if (points.isNotEmpty()) {
+                val n = points.size
+                val visibleN = kotlin.math.max(10, (n / scale).toInt())
+                val maxStart = kotlin.math.max(0, n - visibleN)
+                val start = (maxStart * offset).toInt()
+                val end = kotlin.math.min(n, start + visibleN)
+                val window = points.subList(start, end)
+
+                val path = Path()
+                fun norm(y: Double): Float {
+                    val clamped = y.coerceIn(minDb, maxDb)
+                    val t = (clamped - minDb) / (maxDb - minDb + 1e-9)
+                    return (h - (t * h)).toFloat()
+                }
+                for (i in window.indices) {
+                    val x = if (window.size == 1) 0f else i.toFloat() / (window.size - 1).toFloat() * w
+                    val y = norm(window[i].db)
+                    if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                }
+                drawPath(path = path, color = lineColor, alpha = 0.95f)
+
+                // Маркер курса
+                markerX?.let { mx ->
+                    val idx = ((mx / w) * (window.size - 1)).toInt().coerceIn(0, window.size - 1)
+                    val sel = window[idx]
+                    val y = norm(sel.db)
+                    drawLine(color = accent, start = androidx.compose.ui.geometry.Offset(mx, 0f), end = androidx.compose.ui.geometry.Offset(mx, h), strokeWidth = 2f)
+                    drawCircle(color = accent, radius = 5f, center = androidx.compose.ui.geometry.Offset(mx, y))
+                    drawIntoCanvas { c ->
+                        val p = NPaint().apply { color = NColor.GRAY; textSize = 28f; isAntiAlias = true }
+                        c.nativeCanvas.drawText(String.format("%.1f дБ", sel.db), mx + 12f, y - 12f, p)
+                    }
                 }
             }
         }

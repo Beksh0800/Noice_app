@@ -45,4 +45,22 @@ interface CitySampleDao {
     suspend fun getById(id: Long): CitySample?
 }
 
+@Dao
+interface NoiseAnalysisDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(analysis: NoiseAnalysis): Long
+
+    @Query("SELECT * FROM noise_analyses ORDER BY timestampMillis DESC")
+    fun observeAll(): Flow<List<NoiseAnalysis>>
+
+    @Query("DELETE FROM noise_analyses WHERE id = :id")
+    suspend fun delete(id: Long)
+
+    @Query("SELECT COUNT(*) FROM noise_analyses")
+    suspend fun count(): Int
+
+    @Query("SELECT IFNULL(SUM(count),0) FROM noise_analyses")
+    suspend fun totalSamples(): Int
+}
+
 
