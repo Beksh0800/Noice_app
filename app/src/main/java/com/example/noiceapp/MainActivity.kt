@@ -89,6 +89,16 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material.icons.outlined.PieChart
 import androidx.compose.material.icons.outlined.ListAlt
 import androidx.compose.material.icons.outlined.Timeline
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.border
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.material.icons.outlined.MusicNote
+import androidx.compose.material.icons.outlined.VolumeOff
+import androidx.compose.material.icons.outlined.WbSunny
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -662,46 +672,59 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     topBar = {
                         CenterAlignedTopAppBar(
-                            title = { Text("Шумомер · Аналитика") }
+                            title = { Text("Шумомер") }
                         )
                     },
                     snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
                 ) { innerPadding ->
                     val nav = rememberNavController()
                     val backStack by nav.currentBackStackEntryAsState()
-                    val route = backStack?.destination?.route ?: "graphs"
+                    val route = backStack?.destination?.route ?: "measurement"
                     Column(Modifier.fillMaxSize()) {
                         Box(modifier = Modifier.weight(1f)) {
-                            NavHost(navController = nav, startDestination = "graphs", modifier = Modifier.padding(innerPadding)) {
-                                composable("graphs") {
-                                    NoiseScreen(
+                            NavHost(navController = nav, startDestination = "measurement", modifier = Modifier.padding(innerPadding)) {
+                                composable("measurement") {
+                                    NoiseMeasurementScreen(
                                         modifier = Modifier.fillMaxSize(),
                                         vm = viewModel,
                                         snackbar = snackbarHostState
                                     )
                                 }
-                                composable("dataset") { DatasetScreen(vm = viewModel) }
-                                composable("prediction") { PredictionScreen(vm = viewModel) }
+                                composable("graph") { 
+                                    NoiseGraphScreen(
+                                        modifier = Modifier.fillMaxSize(),
+                                        vm = viewModel,
+                                        snackbar = snackbarHostState
+                                    ) 
+                                }
+                                composable("forecast") { NoiseForecastScreen(vm = viewModel) }
+                                composable("about") { AboutScreen() }
                             }
                         }
                         NavigationBar {
                             NavigationBarItem(
-                                selected = route == "graphs",
-                                onClick = { nav.navigate("graphs") },
+                                selected = route == "measurement",
+                                onClick = { nav.navigate("measurement") },
                                 icon = { Icon(MaterialIcons.Outlined.PieChart, contentDescription = null) },
-                                label = { Text("Графики") }
+                                label = { Text("Замер") }
                             )
                             NavigationBarItem(
-                                selected = route == "dataset",
-                                onClick = { nav.navigate("dataset") },
-                                icon = { Icon(MaterialIcons.Outlined.ListAlt, contentDescription = null) },
-                                label = { Text("Датасет") }
-                            )
-                            NavigationBarItem(
-                                selected = route == "prediction",
-                                onClick = { nav.navigate("prediction") },
+                                selected = route == "graph",
+                                onClick = { nav.navigate("graph") },
                                 icon = { Icon(MaterialIcons.Outlined.Timeline, contentDescription = null) },
+                                label = { Text("График") }
+                            )
+                            NavigationBarItem(
+                                selected = route == "forecast",
+                                onClick = { nav.navigate("forecast") },
+                                icon = { Icon(MaterialIcons.Outlined.ListAlt, contentDescription = null) },
                                 label = { Text("Прогноз") }
+                            )
+                            NavigationBarItem(
+                                selected = route == "about",
+                                onClick = { nav.navigate("about") },
+                                icon = { Icon(MaterialIcons.Outlined.Info, contentDescription = null) },
+                                label = { Text("О проекте") }
                             )
                         }
                     }
@@ -741,6 +764,425 @@ private fun buildCsvStringAggregated(
             val lon = a.lon?.let { String.format("%.6f", it) } ?: ""
             appendLine("$iso,$studentId,${String.format("%.1f", avg.coerceIn(0.0, 120.0))},${String.format("%.1f", a.max.coerceIn(0.0, 120.0))},$lat,$lon,$deviceModel")
         }
+    }
+}
+
+// Экран 1: Замер шума
+@Composable
+fun NoiseMeasurementScreen(modifier: Modifier = Modifier, vm: NoiseViewModel, snackbar: SnackbarHostState) {
+    val ctx = LocalContext.current
+    val isRecording by vm.isRecording
+    val currentDb by vm.currentDb
+
+    // Локальные функции должны быть объявлены до первого использования
+    fun startRecordingService() {
+        ctx.startForegroundService(Intent(ctx, NoiseForegroundService::class.java))
+        vm.onStartRecording()
+    }
+
+    fun stopRecordingService() {
+        ctx.stopService(Intent(ctx, NoiseForegroundService::class.java))
+        vm.onStopRecording()
+    }
+
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted -> if (granted) startRecordingService() }
+
+    fun ensurePermissionAndStart() {
+        val granted = ContextCompat.checkSelfPermission(
+            ctx, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) startRecordingService() else audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    }
+
+    Column(
+        modifier = modifier.fillMaxSize().padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Spacer(Modifier.height(32.dp))
+        
+        // Большой круглый индикатор
+        val dbValue = sanitizeDb(currentDb)
+        val color = when {
+            dbValue < 50 -> Color(0xFF4CAF50) // Зелёный
+            dbValue < 65 -> Color(0xFFFF9800) // Жёлтый
+            else -> Color(0xFFF44336) // Красный
+        }
+        
+        Box(
+            modifier = Modifier
+                .size(240.dp)
+                .border(8.dp, color, CircleShape)
+                .clip(CircleShape)
+                .background(color.copy(alpha = 0.1f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = String.format("%.1f", dbValue),
+                    fontSize = 48.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = color
+                )
+                Text(
+                    text = "дБ",
+                    fontSize = 24.sp,
+                    color = color
+                )
+            }
+        }
+        
+        Spacer(Modifier.height(32.dp))
+        
+        Text(
+            text = vm.classify(dbValue),
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        
+        Spacer(Modifier.height(48.dp))
+        
+        // Кнопка Старт/Стоп
+        Button(
+            onClick = { 
+                if (isRecording) stopRecordingService() 
+                else ensurePermissionAndStart() 
+            },
+            modifier = Modifier
+                .fillMaxWidth(0.8f)
+                .height(56.dp),
+            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                containerColor = if (isRecording) MaterialTheme.colorScheme.error 
+                                else MaterialTheme.colorScheme.primary
+            )
+        ) {
+            Text(
+                text = if (isRecording) "СТОП ЗАМЕРА" else "СТАРТ ЗАМЕРА",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        
+        Spacer(Modifier.height(16.dp))
+        
+        if (isRecording) {
+            LinearProgressIndicator(
+                modifier = Modifier.fillMaxWidth(0.6f),
+                color = color
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Идёт замер...",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        
+        Spacer(Modifier.weight(1f))
+        
+        Text(
+            text = "Показания приблизительные (без сертифицированной калибровки)",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            fontSize = 12.sp
+        )
+    }
+}
+
+// Экран 2: График
+@Composable
+fun NoiseGraphScreen(modifier: Modifier = Modifier, vm: NoiseViewModel, snackbar: SnackbarHostState) {
+    Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
+        Text(
+            "График шума",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold
+        )
+        
+        Spacer(Modifier.height(16.dp))
+        
+        // Линейный график
+        SectionCard(title = "Уровень шума за последние минуты") {
+            Spacer(Modifier.height(8.dp))
+            Chart(
+                history = vm.history.map { it.copy(db = sanitizeDb(it.db)) },
+                minDb = 0.0,
+                maxDb = 120.0,
+                height = 200
+            )
+            
+            Spacer(Modifier.height(16.dp))
+            
+            // Подписи уровней
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(12.dp)
+                            .background(Color(0xFF4CAF50), CircleShape)
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Тихо",
+                        fontSize = 12.sp,
+                        color = Color(0xFF4CAF50)
+                    )
+                    Text(
+                        "< 50 дБ",
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(12.dp)
+                            .background(Color(0xFFFF9800), CircleShape)
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Средне",
+                        fontSize = 12.sp,
+                        color = Color(0xFFFF9800)
+                    )
+                    Text(
+                        "50-65 дБ",
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(12.dp)
+                            .background(Color(0xFFF44336), CircleShape)
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Шумно",
+                        fontSize = 12.sp,
+                        color = Color(0xFFF44336)
+                    )
+                    Text(
+                        "> 65 дБ",
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+        
+        Spacer(Modifier.height(16.dp))
+        
+        // Аналитика
+        SectionCard(title = "Статистика") {
+            AnalyticsRow(title = "1 мин", vm = vm, windowSec = 60)
+            Spacer(Modifier.height(8.dp))
+            AnalyticsRow(title = "5 мин", vm = vm, windowSec = 300)
+        }
+    }
+}
+
+// Экран 3: Прогноз
+@Composable
+fun NoiseForecastScreen(vm: NoiseViewModel) {
+    val lastForecast = remember(vm.history) { vm.forecastNext() }
+    val currentDb by vm.currentDb
+    val recent = vm.history.takeLast(20)
+    
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            "Прогноз",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold
+        )
+        
+        Spacer(Modifier.height(32.dp))
+        
+        Text(
+            "Вероятно, в ближайшие 5 минут:",
+            fontSize = 18.sp,
+            textAlign = TextAlign.Center
+        )
+        
+        Spacer(Modifier.height(24.dp))
+        
+        // Иконка и прогноз
+        val avgRecent = if (recent.isNotEmpty()) recent.map { it.db }.average() else currentDb
+        val icon = when {
+            avgRecent < 50 -> MaterialIcons.Outlined.WbSunny // Солнышко - тишина
+            avgRecent < 65 -> MaterialIcons.Outlined.VolumeOff // Тишина
+            else -> MaterialIcons.Outlined.MusicNote // Колонки - шумно
+        }
+        
+        val iconColor = when {
+            avgRecent < 50 -> Color(0xFF4CAF50)
+            avgRecent < 65 -> Color(0xFFFF9800)
+            else -> Color(0xFFF44336)
+        }
+        
+        val prediction = when {
+            avgRecent < 50 -> "Будет тихо"
+            avgRecent < 65 -> "Умеренный шум"
+            else -> "Будет шумно"
+        }
+        
+        Icon(
+            icon,
+            contentDescription = null,
+            modifier = Modifier.size(80.dp),
+            tint = iconColor
+        )
+        
+        Spacer(Modifier.height(16.dp))
+        
+        Text(
+            prediction,
+            fontSize = 24.sp,
+            fontWeight = FontWeight.Bold,
+            color = iconColor
+        )
+        
+        Spacer(Modifier.height(8.dp))
+        
+        lastForecast?.let { forecast ->
+            Text(
+                "Ожидаемый уровень: ${"%.1f".format(forecast)} дБ",
+                fontSize = 16.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        
+        Spacer(Modifier.height(32.dp))
+        
+        // Детали прогноза
+        SectionCard(title = "На основе последних измерений") {
+            Text("Количество замеров: ${recent.size}")
+            if (recent.isNotEmpty()) {
+                Text("Средний уровень: ${"%.1f".format(avgRecent)} дБ")
+                Text("Тенденция: ${if (recent.size >= 2 && recent.last().db > recent.first().db) "рост" else "снижение"}")
+            }
+        }
+    }
+}
+
+// Экран 4: О проекте
+@Composable
+fun AboutScreen() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp)
+    ) {
+        Text(
+            "О проекте",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold
+        )
+        
+        Spacer(Modifier.height(16.dp))
+        
+        SectionCard(title = "Как работает приложение") {
+            Text(
+                text = "Приложение использует микрофон вашего устройства для измерения уровня шума " +
+                       "в окружающей среде. Звуковые волны преобразуются в цифровые данные и анализируются " +
+                       "для определения громкости в децибелах (дБ).\n\n" +
+                       "Измерения проводятся в реальном времени с частотой один раз в секунду. " +
+                       "Данные сохраняются в локальной базе данных для построения графиков и статистики.",
+                fontSize = 14.sp,
+                lineHeight = 20.sp
+            )
+        }
+        
+        Spacer(Modifier.height(16.dp))
+        
+        SectionCard(title = "Что такое децибел") {
+            Text(
+                text = "Децибел (дБ) — это единица измерения громкости звука. " +
+                       "Шкала децибелов логарифмическая, что означает:\n\n" +
+                       "• 0-30 дБ — Очень тихо (шёпот, тихая библиотека)\n" +
+                       "• 30-50 дБ — Тихо (спокойная комната, офис)\n" +
+                       "• 50-65 дБ — Умеренно (обычная речь, фоновая музыка)\n" +
+                       "• 65-80 дБ — Громко (оживлённая улица, ресторан)\n" +
+                       "• 80+ дБ — Очень громко (транспорт, строительство)\n\n" +
+                       "Важно: длительное воздействие звука свыше 85 дБ может повредить слух.",
+                fontSize = 14.sp,
+                lineHeight = 20.sp
+            )
+        }
+        
+        Spacer(Modifier.height(16.dp))
+        
+        SectionCard(title = "Примеры уровней шума") {
+            Column {
+                ExampleRow("10 дБ", "Дыхание", Color(0xFF4CAF50))
+                ExampleRow("20 дБ", "Шёпот", Color(0xFF4CAF50))
+                ExampleRow("40 дБ", "Тихая библиотека", Color(0xFF4CAF50))
+                ExampleRow("60 дБ", "Обычная речь", Color(0xFFFF9800))
+                ExampleRow("70 дБ", "Пылесос", Color(0xFFFF9800))
+                ExampleRow("80 дБ", "Городская улица", Color(0xFFF44336))
+                ExampleRow("90 дБ", "Мотоцикл", Color(0xFFF44336))
+                ExampleRow("100 дБ", "Отбойный молоток", Color(0xFFF44336))
+            }
+        }
+        
+        Spacer(Modifier.height(16.dp))
+        
+        SectionCard(title = "Точность измерений") {
+            Text(
+                text = "Измерения являются приблизительными и зависят от:\n\n" +
+                       "• Качества микрофона устройства\n" +
+                       "• Калибровки приложения\n" +
+                       "• Окружающих условий\n" +
+                       "• Положения устройства\n\n" +
+                       "Для точных измерений используйте профессиональные шумомеры.",
+                fontSize = 14.sp,
+                lineHeight = 20.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun ExampleRow(db: String, description: String, color: Color) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = db,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+            color = color,
+            modifier = Modifier.width(60.dp)
+        )
+        Text(
+            text = description,
+            fontSize = 14.sp,
+            modifier = Modifier.weight(1f)
+        )
     }
 }
 
