@@ -22,4 +22,12 @@ class CitySamplesRepository(private val dao: CitySampleDao) {
     suspend fun get(id: Long): CitySample? = dao.getById(id)
 }
 
+class NoiseAnalysesRepository(private val dao: NoiseAnalysisDao) {
+    suspend fun add(analysis: NoiseAnalysis) = dao.insert(analysis)
+    fun observe(): Flow<List<NoiseAnalysis>> = dao.observeAll()
+    suspend fun delete(id: Long) = dao.delete(id)
+    suspend fun count(): Int = dao.count()
+    suspend fun totalSamples(): Int = dao.totalSamples()
+}
+
 
